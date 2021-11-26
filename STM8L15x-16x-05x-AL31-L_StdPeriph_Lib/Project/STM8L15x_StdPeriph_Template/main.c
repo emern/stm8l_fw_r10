@@ -1,119 +1,108 @@
 /**
-  ******************************************************************************
-  * @file    GPIO/GPIO_Toggle/main.c
-  * @author  MCD Application Team
-  * @version V1.5.2
-  * @date    30-September-2014
-  * @brief   Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * <h2><center>&copy; COPYRIGHT 2014 STMicroelectronics</center></h2>
-  *
-  * Licensed under MCD-ST Liberty SW License Agreement V2, (the "License");
-  * You may not use this file except in compliance with the License.
-  * You may obtain a copy of the License at:
-  *
-  *        http://www.st.com/software_license_agreement_liberty_v2
-  *
-  * Unless required by applicable law or agreed to in writing, software 
-  * distributed under the License is distributed on an "AS IS" BASIS, 
-  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  * See the License for the specific language governing permissions and
-  * limitations under the License.
-  *
-  ******************************************************************************
-  */ 
+ * @file main.c
+ * @brief Main implementation for RTC based timer (print over USB)
+ */
 
-/* Includes ------------------------------------------------------------------*/
+/* Includes */
 #include "stm8l15x.h"
 #include <string.h>
 
+/* Local defines */
 
-// #define PUTCHAR_PROTOTYPE char putchar (char c)
-// #define GETCHAR_PROTOTYPE char getchar (void)
-/** @addtogroup GPIO_Toggle
-  * @{
-  */
-
+/* Blinky LED address information */
 #define LED_GPIO_PORT  GPIOA
 #define LED_GPIO_PINS  GPIO_Pin_4
+
+/* I2C config data */
 #define I2C_SPEED 100000
+
+/* Useful macro for reducing runtime code size */
 #define ARR_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+
+/* RTC bitmasks */
 #define TEN_SEC_BITMASK 0b01110000
 #define SECONDS_BITMASK 0b00001111
-/* Private macro -------------------------------------------------------------*/
-/* Private variables ---------------------------------------------------------*/
-/* Private function prototypes -----------------------------------------------*/
+
+/**/
+#define OUTPUT_STR_BUF_SIZE 3
+
+/* Local enums and structs */
+
+typedef enum
+{
+  RTC_PRINT_SECONDS,
+
+  RTC_PRINT_MINUTES,
+
+  RTC_PRINT_HOURS,
+
+  RTC_PRINT_DAYS,
+
+  RTC_PRINT_MONTHS,
+
+  RTC_PRINT_YEARS
+
+} print_type_t;
+
+/* Private function prototypes */
 void Delay (uint16_t nCount);
 char putchar (char c);
 char getchar (void);
 void tiny_print (char* str, int len);
 void tiny_scan (char* out, int len);
-void i2c_write(uint8_t data);
-uint8_t read_rtc(void);
+void rtc_write(uint8_t data);
+void read_rtc(uint8_t* bytes, uint8_t len);
 uint8_t decode_rtc(uint8_t val);
-void print_secs(uint8_t secs);
+void print_rtc_val(uint8_t val, print_type_t type);
 
-/* Private functions ---------------------------------------------------------*/
 
-/**
-  * @brief  Main program.
-  * @param  None
-  * @retval None
-  */
 void main(void)
 {
-	char ans;
-  uint8_t i2c_resp = 0;
-  uint8_t time_dec = 0;
-  uint8_t time_dec_last = 0;
-  uint8_t addr = 208;
-  uint8_t own = 15;
-  char greeting[] = "HELLO\r\n";
-  char response[5];
+  /* Initialize system variables */
+  uint8_t i2c_data[] = {0,0};
+  uint8_t secs_dec = 0;
+  uint8_t secs_dec_last = 0;
 
-  /*High speed internal clock prescaler: 1*/
+  /* High speed internal clock prescaler: 1 */
   CLK_SYSCLKDivConfig(CLK_SYSCLKDiv_2);
   /* Initialize LEDs mounted on STM8L152X-EVAL board */
   GPIO_Init(LED_GPIO_PORT, LED_GPIO_PINS, GPIO_Mode_Out_PP_Low_Fast);
   SYSCFG_REMAPPinConfig(REMAP_Pin_USART1TxRxPortA, ENABLE);
 
-  //USART1 CLK enable
+  /* USART1 CLK enable */
 	CLK_PeripheralClockConfig(CLK_Peripheral_USART1, ENABLE);
   GPIO_ExternalPullUpConfig(GPIOA, GPIO_Pin_3, ENABLE);
   GPIO_ExternalPullUpConfig(GPIOA, GPIO_Pin_4, ENABLE);
 
-  //Enable UART TX
+  /* Enable UART TX */
   USART_Init(USART1, 115200, USART_WordLength_8b, USART_StopBits_1, USART_Parity_No, (USART_Mode_Rx|USART_Mode_Tx));
   USART_ClockInit(USART1, USART_Clock_Disable, USART_CPOL_Low, USART_CPHA_1Edge, USART_LastBit_Disable);
   USART_Cmd(USART1, ENABLE);
 
+  /* Enable I2C module */
   CLK_PeripheralClockConfig(CLK_Peripheral_I2C1, ENABLE);
   I2C_Init(I2C1, I2C_SPEED, 0xA0, I2C_Mode_I2C, I2C_DutyCycle_2, I2C_Ack_Enable, I2C_AcknowledgedAddress_7bit);
   I2C_Cmd(I2C1, ENABLE);
 
+  /* Configure I2C GPIO to HiZ (board has external 10k pullups) */
   GPIO_Init(GPIOC, GPIO_Pin_0, GPIO_Mode_Out_OD_HiZ_Fast);
   GPIO_Init(GPIOC, GPIO_Pin_1, GPIO_Mode_Out_OD_HiZ_Fast);
 
+  /* Must write 0 to RTC to disable the Clock Halt bit */
+  rtc_write(0);
 
-  i2c_write(0);
-
-  // tiny_print(greeting, ARR_SIZE(greeting));
-  // tiny_scan(response, ARR_SIZE(response));
-  // tiny_print(response, ARR_SIZE(response));
+  /* Main loop */
   while (1)
   {
 
-    //tiny_print(greeting, ARR_SIZE(greeting));
+    read_rtc(i2c_data, 2);
+    secs_dec = decode_rtc(i2c_data[0]);
 
-    i2c_resp = read_rtc();
-    time_dec = decode_rtc(i2c_resp);
-
-    if (time_dec != time_dec_last)
+    if (secs_dec != secs_dec_last)
     {
-      time_dec_last = time_dec;
-      print_secs(i2c_resp);
+      secs_dec_last = secs_dec;
+      print_rtc_val(i2c_data[0], RTC_PRINT_SECONDS);
+      print_rtc_val(i2c_data[1], RTC_PRINT_MINUTES);
     }
 
 
@@ -169,27 +158,33 @@ void tiny_print (char* str, int len)
 {
   int i;
 
+  if (strlen(str) != len - 1)
+  {
+    return;
+  }
+
   for (i=0; i<len; i++)
   {
     putchar(str[i]);
   }
-
-  return;
 }
 
 void tiny_scan (char* out, int len)
 {
   int i;
 
+  if (strlen(out) != len - 1)
+  {
+    return;
+  }
+
   for (i=0; i<len; i++)
   {
     out[i] = getchar();
   }
-
-  return;
 }
 
-void i2c_write(uint8_t data)
+void rtc_write(uint8_t data)
 {
   I2C_GenerateSTART(I2C1, ENABLE);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
@@ -208,66 +203,105 @@ void i2c_write(uint8_t data)
   return;
 }
 
-uint8_t read_rtc(void)
+
+/**
+ * @brief Transmit starting address and then act as master reciever
+ *
+ * Example on multibyte data reads avaliable in section 28.4.2 (fig 147) of Doc # RM0031 STM8L TRM
+*/
+void read_rtc(uint8_t* bytes, uint8_t len)
 {
+  uint8_t i;
 
-  uint8_t i2c_resp = 0;
-
+  /* Generate I2C start event, (EV5) */
   I2C_GenerateSTART(I2C1, ENABLE);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
 
+  /* Send slave device address, (EV6) */
   I2C_Send7bitAddress(I2C1, 0b11010000, I2C_Direction_Transmitter);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
 
+  /* Send register read address, in this case we start read from RTC base register (address 0) (EV_8) */
   I2C_SendData(I2C1, 0);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
 
+  /* Generate repeated start condition (EV5) */
   I2C_GenerateSTART(I2C1, ENABLE);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
 
+  /* Send slave device address, (EV6) */
   I2C_Send7bitAddress(I2C1, 0b11010000, I2C_Direction_Receiver);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED));
 
-  I2C_AcknowledgeConfig(I2C1, DISABLE);
+  /* Not actually in the datasheet but we must explicitly enable I2C ACK in this stage */
+  I2C_AcknowledgeConfig(I2C1, ENABLE);
 
-  while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED));
-  i2c_resp = I2C_ReceiveData(I2C1);
+  /* If only a single byte is being read, prepare the stop condition */
+  if (len == 1)
+  {
+    I2C_AcknowledgeConfig(I2C1, DISABLE);
+    I2C_GenerateSTOP(I2C1, ENABLE);
+  }
 
-  I2C_GenerateSTOP(I2C1, ENABLE);
+  /* Read i bytes from RTC, on second to last data read we must set a NACK and set a STOP condition */
+  for (i=0; i<len; i++)
+  {
+    while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED));
+    bytes[i] = I2C_ReceiveData(I2C1);
 
-  return i2c_resp;
+    if (i == (len - 2))
+    {
+      I2C_AcknowledgeConfig(I2C1, DISABLE);
+      I2C_GenerateSTOP(I2C1, ENABLE);
+    }
+  }
 }
 
 uint8_t decode_rtc(uint8_t val)
 {
-  uint8_t ten_ticks = ((val & TEN_SEC_BITMASK) >> 4) * 10;
+  uint8_t ten_ticks = (val >> 4) * 10;
   uint8_t ticks = val & SECONDS_BITMASK;
   return ten_ticks + ticks;
 }
 
-void print_secs(uint8_t secs)
+void print_rtc_val(uint8_t val, print_type_t type)
 {
-  const char header[] = "Seconds: ";
+  char out[3];
+  const char secs_header[] = "Seconds: ";
+  const char mins_header[] = "Minutes: ";
   const char newline[] = "\r\n";
-  char out[2];
-  uint8_t tens = (uint8_t)(secs >> 4) + 48;
-  uint8_t ones = (uint8_t)(secs & SECONDS_BITMASK) + 48;
-  out[0] = tens;
-  out[1] = ones;
-  tiny_print(header, ARR_SIZE(header));
-  tiny_print(out, ARR_SIZE(out));
-  tiny_print(newline, ARR_SIZE(newline));
+  const char line_break[] = "\r\n\r\n";
 
-  return;
+  /**
+   * Convert BCD to ASCII by bit manipulations.
+   *
+   * Step 1) Extract "10's" digit by recovering only bits 4:6 of the RTC value to out[0]
+   * Step 2) Extract "1's" digit by bitmasking the lower 4 bits of RTC value to out[1]
+   * Step 3) Convert decimal digits to equivalent ASCII interpretation by adding constant 48
+   *
+   * Note: tiny_print expects NULL terminated string, must append NULL character for databuffer
+  */
+  out[0] = (char)((val >> 4) + 48);
+  out[1] = (char)((val & SECONDS_BITMASK) + 48);
+  out[2] = '\0';
+
+  switch (type)
+  {
+    case RTC_PRINT_SECONDS:
+      tiny_print(secs_header, ARR_SIZE(secs_header));
+      tiny_print(out, OUTPUT_STR_BUF_SIZE);
+      tiny_print(newline, ARR_SIZE(newline));
+      break;
+
+    case RTC_PRINT_MINUTES:
+      tiny_print(mins_header, ARR_SIZE(mins_header));
+      tiny_print(out, OUTPUT_STR_BUF_SIZE);
+      tiny_print(line_break, ARR_SIZE(line_break));
+      break;
+
+    default:
+      break;
+  }
 }
 
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
-
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
 
