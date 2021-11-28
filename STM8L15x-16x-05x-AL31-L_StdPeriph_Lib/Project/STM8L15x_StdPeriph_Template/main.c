@@ -23,7 +23,10 @@
 #define TEN_SEC_BITMASK 0b01110000
 #define SECONDS_BITMASK 0b00001111
 
-/**/
+/* RTC data payload read size */
+#define RTC_PAY_READ_SIZE 2
+
+/* Output data string buffer size */
 #define OUTPUT_STR_BUF_SIZE 3
 
 /* Local enums and structs */
@@ -50,7 +53,7 @@ char putchar (char c);
 char getchar (void);
 void tiny_print (char* str, int len);
 void tiny_scan (char* out, int len);
-void rtc_write(uint8_t data);
+void rtc_write(uint8_t addr, uint8_t data);
 void read_rtc(uint8_t* bytes, uint8_t len);
 uint8_t decode_rtc(uint8_t val);
 void print_rtc_val(uint8_t val, print_type_t type);
@@ -88,16 +91,21 @@ void main(void)
   GPIO_Init(GPIOC, GPIO_Pin_0, GPIO_Mode_Out_OD_HiZ_Fast);
   GPIO_Init(GPIOC, GPIO_Pin_1, GPIO_Mode_Out_OD_HiZ_Fast);
 
-  /* Must write 0 to RTC to disable the Clock Halt bit */
-  rtc_write(0);
+  /* Must write 0 to RTC to disable the Clock Halt bit and clear data stored in NV (seconds) */
+  rtc_write(0, 0);
+  /* Clear NV (minutes) */
+  rtc_write(1, 0);
 
   /* Main loop */
   while (1)
   {
 
-    read_rtc(i2c_data, 2);
+    /* Read rtc data */
+    read_rtc(i2c_data, RTC_PAY_READ_SIZE);
+    /* Decode number of seconds recieved (always first byte) to determine if print is needed */
     secs_dec = decode_rtc(i2c_data[0]);
 
+    /* Print time data if new second has rolled over */
     if (secs_dec != secs_dec_last)
     {
       secs_dec_last = secs_dec;
@@ -105,17 +113,17 @@ void main(void)
       print_rtc_val(i2c_data[1], RTC_PRINT_MINUTES);
     }
 
-
+    /* Toggle on board GPIO and delay */
     GPIO_ToggleBits(LED_GPIO_PORT, LED_GPIO_PINS);
     Delay(0xFF00);
   }
 }
 
 /**
-  * @brief  Inserts a delay time.
-  * @param  nCount: specifies the delay time length.
-  * @retval None
-  */
+ * @brief  Inserts a delay time.
+ * @param  nCount: specifies the delay time length.
+ * @retval None
+ */
 void Delay(__IO uint16_t nCount)
 {
   /* Decrement nCount value */
@@ -127,48 +135,74 @@ void Delay(__IO uint16_t nCount)
 	
 }
 
+/**
+ * @brief Send byte to host via UART
+ * @param c: Byte to send
+ * @retval Byte sent
+*/
 char putchar (char c)
 {
   /* Write a character to the UART1 */
   USART_SendData8(USART1, c);
 /* Loop until the end of transmission */
-  while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET)
-  {
-  }
+  while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
   return (c);
 }
 
+/**
+ * @brief Recieve byte from host via UART
+ * @retval Byte recieved
+ * @note This operation is blocking, if host does not send any data, device will poll indefinitely
+*/
 char getchar (void)
 {
 
   char c = 0;
   /* Loop until the Read data register flag is SET */
-  while (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) == RESET)
-  {
-  }
+  while (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) == RESET);
   c = USART_ReceiveData8(USART1);
   return (c);
 }
 
 /**
- * @brief Print pre-formatted buffer via UART
+ * @brief Print pre-formatted string via UART
+ * @param str: Pre-formatted string to print
+ * @param len: Length of string INCLUDING NULL TERMINATOR
+ * @retval None
  *
+ * @note In order to reduce compiled code size, the ARR_SIZE macro is reccomended
+ *       to be used to calculate the len parameter at compile time. Since ARR_SIZE
+ *       calculates complete buffer size, NULL terminator is expected in the value
+ *       of len.
 */
 void tiny_print (char* str, int len)
 {
   int i;
 
+  /* Double check string length */
   if (strlen(str) != len - 1)
   {
     return;
   }
 
+  /* Send string via UART */
   for (i=0; i<len; i++)
   {
     putchar(str[i]);
   }
 }
 
+/**
+ * @brief Scan for string of length len via UART
+ * @param out: Data buffer containing recieved string
+ * @param len: Length of expected string INCLUDING NULL TERMINATOR
+ * @retval None
+ *
+ * @note In order to reduce compiled code size, the ARR_SIZE macro is reccomended
+ *       to be used to calculate the len parameter at compile time. Since ARR_SIZE
+ *       calculates complete buffer size, NULL terminator is expected in the value
+ *       of len.
+*/
 void tiny_scan (char* out, int len)
 {
   int i;
@@ -184,20 +218,31 @@ void tiny_scan (char* out, int len)
   }
 }
 
-void rtc_write(uint8_t data)
+/**
+ * @brief Write byte to RTC register addr
+ * @param addr: RTC register address to write data byte to
+ * @param data: Data to write
+ * @retval None
+*/
+void rtc_write(uint8_t addr, uint8_t data)
 {
+  /* Generate I2C start condition */
   I2C_GenerateSTART(I2C1, ENABLE);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
 
+  /* Send RTC device address */
   I2C_Send7bitAddress(I2C1, 0b11010000, I2C_Direction_Transmitter);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
 
+  /* Send target register address */
+  I2C_SendData(I2C1, addr);
+  while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
+
+  /* Send data byte */
   I2C_SendData(I2C1, data);
   while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
 
-  I2C_SendData(I2C1, 0b00000000);
-  while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-
+  /* Generate stop condition */
   I2C_GenerateSTOP(I2C1, ENABLE);
 
   return;
@@ -249,14 +294,21 @@ void read_rtc(uint8_t* bytes, uint8_t len)
     while(!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED));
     bytes[i] = I2C_ReceiveData(I2C1);
 
+    /* Case for if i = 1 already handled by pre-loop statement */
     if (i == (len - 2))
     {
+      /* Disable ACK to generate final NACK and STOP conditions */
       I2C_AcknowledgeConfig(I2C1, DISABLE);
       I2C_GenerateSTOP(I2C1, ENABLE);
     }
   }
 }
 
+/**
+ * @brief Function to decode BCD RTC value to decimal
+ * @param val: Raw encoded value
+ * @retval Decoded decimal time value
+*/
 uint8_t decode_rtc(uint8_t val)
 {
   uint8_t ten_ticks = (val >> 4) * 10;
@@ -264,6 +316,11 @@ uint8_t decode_rtc(uint8_t val)
   return ten_ticks + ticks;
 }
 
+/**
+ * @brief Function to print BCD encoded RTC value to Host PC
+ * @param val: Encoded RTC value
+ * @param type: Data type indicator
+*/
 void print_rtc_val(uint8_t val, print_type_t type)
 {
   char out[3];
@@ -285,6 +342,7 @@ void print_rtc_val(uint8_t val, print_type_t type)
   out[1] = (char)((val & SECONDS_BITMASK) + 48);
   out[2] = '\0';
 
+  /* Print based on type */
   switch (type)
   {
     case RTC_PRINT_SECONDS:
